@@ -19,6 +19,7 @@ var decrypted;
 // get reference to S3 client 
 var s3client = new AWS.S3();
 var s3bucket = process.env.S3_BUCKET;
+var s3FileKey = process.env.S3_FILE_KEY;
 
 // This handler is called by the AWS Lambda controller when a new SNS message arrives.
 exports.handler = function(event, context) {
@@ -66,10 +67,11 @@ function processEvent(event, context) {
             "token": decrypted
           },
           "repo": repo,
-          "ref": sha
+          "ref": sha,
+          "format": 'zipball'
         };
         var output = archive(archiveOpts).
-          pipe(fs.createWriteStream('/tmp/' + sha + '.tar.gz'));
+          pipe(fs.createWriteStream('/tmp/' + sha + '.zip'));
 
         output.on('close', function() {
           s3put(output.path, context);
@@ -105,7 +107,7 @@ function s3put(filename, context){
 
         s3client.putObject({
           Bucket: s3bucket,
-          Key: filename,
+          Key: s3FileKey,
           Body: data
         }, callback);
       });
