@@ -12,14 +12,19 @@ var async = require('async');
 var AWS = require('aws-sdk');
 var fs = require('fs');
 var archive = require('github-archive-stream');
+var GitHub = require('github-api');
 
-var encryptedToken = process.env['GIT_TOKEN'];
+var encryptedToken = process.env.GIT_TOKEN;
 var decrypted;
 
 // get reference to S3 client 
 var s3client = new AWS.S3();
 var s3bucket = process.env.S3_BUCKET;
 var s3FileKey = process.env.S3_FILE_KEY;
+
+// Github API details
+var github_user = process.env.GITHUB_USER;
+var github_repo = process.env.GITHUB_REPO;
 
 // This handler is called by the AWS Lambda controller when a new SNS message arrives.
 exports.handler = function(event, context) {
@@ -45,38 +50,43 @@ function processEvent(event, context) {
   var githubEvent = event.Records[0].Sns.Message;
   var mesgattr = event.Records[0].Sns.MessageAttributes;
 
-  if ((mesgattr.hasOwnProperty('X-Github-Event')) && (mesgattr['X-Github-Event'].Value == "pull_request")) {
+  if ((mesgattr.hasOwnProperty('X-Github-Event')) && (mesgattr['X-Github-Event'].Value == "issue_comment")) {
     var eventObj = JSON.parse(githubEvent);
-    if (eventObj.action == "opened") {
-      console.log(eventObj);
+
+    if (eventObj.action == "created" && eventObj.comment.body == "deeplock" && eventObj.issue.state == "open") {
       var re = new RegExp(/([^\/]*)/);
       var found = re.exec(eventObj.repository.full_name);
       var user = found[0];
       var repo = eventObj.repository.full_name;
-      var sha = eventObj.pull_request.head.sha;
+      var pull_request = get_pull_request(eventObj.issue.number);
 
-      console.log("DEFINITELY Got a pull request opened. Will get code from: ", repo);
+      pull_request.then(function(response) {
+        console.log("DEFINITELY Got a pull request opened. Will get code from: ", repo);
 
-      if (!decrypted){
-        context.fail("Couldn't retrieve github token. Exiting.");
-      } else {
-
-        var archiveOpts = {
-          "auth": {
-            "user": user,
-            "token": decrypted
-          },
-          "repo": repo,
-          "ref": sha,
-          "format": 'zipball'
-        };
-        var output = archive(archiveOpts).
-          pipe(fs.createWriteStream('/tmp/' + sha + '.zip'));
-
-        output.on('close', function() {
-          s3put(output.path, context);
-        });
-      }       //end token else
+        if (!decrypted){
+          context.fail("Couldn't retrieve github token. Exiting.");
+        } else {
+          var sha = response.data.head.sha;
+          var archiveOpts = {
+            "auth": {
+              "user": user,
+              "token": decrypted
+            },
+            "repo": repo,
+            "ref": sha,
+            "format": 'zipball'
+          };
+          var output = archive(archiveOpts).
+            pipe(fs.createWriteStream('/tmp/' + sha + '.zip'));
+  
+          output.on('close', function() {
+            s3put(output.path, context);
+          });
+        }       //end token else
+      }, function(reason) {
+          console.log("something went wrong when trying to get the sha!")
+          console.log(reason)
+      })
     }         //end if opened message
     else {
       console.log("Message was not a github pull request open. Exiting.");
@@ -92,10 +102,22 @@ function processEvent(event, context) {
     console.log(githubEvent);
     console.log(mesgattr);
     console.log(mesgattr['X-Github-Event'].Value);
-    console.log(eventObj.action);
     context.succeed();
   }
-}; //end index handler
+}
+
+function get_pull_request(pull_request_id) {
+  var gh = new GitHub({
+    token: decrypted
+  });
+
+  var repo = gh.getRepo(github_user, github_repo);
+
+  return repo.getPullRequest(pull_request_id)
+    .then(function(response) {
+      return response;
+    });
+}
 
 function s3put(filename, context){
   console.log("Storing " + filename);
